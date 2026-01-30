@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+.venv
+
+# Virtual environment
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+auction_bot.log
+
+# Database files
+*.db
+*.sqlite3
+
+# Configs with secrets
+.env
+config.py
+secrets.py
+credentials.json
+token.pickle
+*.env
+
+# Sessions
+*.session
+
+# Backup files
+*.backup
+*.backup*
+*.orig
+*.rej
+*.tmp
+*.patch
+
+# System
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp

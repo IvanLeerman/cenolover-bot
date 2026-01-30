@@ -1,0 +1,8 @@
+# Конфигурация бота Ценоловер (пример)
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+DB_HOST = "localhost"
+DB_NAME = "auction_db"
+DB_USER = "auction_user"
+DB_PASSWORD = "your_password_here"
+ADMIN_IDS = [123456789]
+CHANNEL_ID = -1001234567890
