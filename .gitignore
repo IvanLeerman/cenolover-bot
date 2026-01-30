@@ -52,3 +52,4 @@ Thumbs.db
 
 # Temporary files
 *.tmp
+udo systemctl status postgresql@12-main

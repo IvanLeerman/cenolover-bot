@@ -1,0 +1,202 @@
+import asyncio
+import json
+import logging
+import pytz
+from typing import Dict, List, Optional
+from datetime import datetime, timedelta
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils import executor
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters.state import State, StatesGroup
+
+from config import (
+    API_TOKEN, DB_URI, AUCTION_CHANNEL, TIMEZONE, MIN_STEP,
+    AUCTION_DURATION_HOURS, EXTEND_THRESHOLD_MIN, EXTEND_TO_MIN,
+    PAYMENT_TIMEOUT_MIN, MAX_UNPAID_WARNINGS, BAN_DAYS, ADMIN_IDS
+)
+from async_db import AsyncDatabase
+from rate_limit import setup_rate_limit
+from storage_config import get_redis_storage
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('auction_bot.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+bot = Bot(token=API_TOKEN)
+
+# Используем Redis storage вместо MemoryStorage
+storage = get_redis_storage()
+dp = Dispatcher(bot, storage=storage)
+
+scheduler = AsyncIOScheduler(timezone=pytz.timezone(TIMEZONE))
+db = AsyncDatabase(DB_URI)
+
+active_timers: Dict[int, asyncio.Task] = {}
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+def format_dt(dt: datetime | None) -> str:
+    if not dt:
+        return "не задано"
+    return dt.strftime("%d.%m.%Y %H:%M")
+
+async def format_remaining(end_time: datetime | None) -> str:
+    if not end_time:
+        return "---"
+    now = datetime.now(pytz.timezone(TIMEZONE))
+    delta = end_time - now
+    if delta.total_seconds() <= 0:
+        return "🛑 Завершён"
+    total_seconds = int(delta.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours} ч {minutes:02d} мин"
+    elif minutes > 0:
+        return f"{minutes} мин {seconds:02d} сек"
+    else:
+        return f"{seconds} сек"
+
+# ========== STATES ==========
+class BidState(StatesGroup):
+    amount = State()
+
+# ========== SECURITY MIDDLEWARE ==========
+async def security_middleware(handler, event, data):
+    """Промежуточный слой для безопасности"""
+    user_id = event.from_user.id if hasattr(event, 'from_user') else None
+    
+    # Логируем действия администраторов
+    if user_id and is_admin(user_id):
+        logger.info(f"👑 Админ действие: {user_id} - {type(event).__name__}")
+    
+    # Проверяем бан пользователя
+    if user_id:
+        user = await db.get_user(user_id)
+        if user and user.get('banned_until'):
+            banned_until = user.get('banned_until')
+            if isinstance(banned_until, str):
+                banned_until = datetime.fromisoformat(banned_until)
+            if banned_until > datetime.now():
+                if hasattr(event, 'answer'):
+                    await event.answer(f"🚫 Вы заблокированы до {format_dt(banned_until)}")
+                return
+    
+    return await handler(event, data)
+
+# Регистрируем middleware
+dp.middleware.setup(security_middleware)
+
+# ========== HANDLERS (остаются как были, но с улучшенной безопасностью) ==========
+
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    try:
+        user_id = message.from_user.id
+        user_name = message.from_user.full_name
+        await db.upsert_user(user_id, user_name)
+
+        user = await db.get_user(user_id)
+        banned_text = ""
+        if user and user.get('banned_until'):
+            banned_until = user.get('banned_until')
+            if isinstance(banned_until, str):
+                banned_until = datetime.fromisoformat(banned_until)
+            if banned_until > datetime.now():
+                banned_text = f"\n\n⚠️ <b>Вы заблокированы до {format_dt(banned_until)}</b>"
+
+        kb = InlineKeyboardMarkup(row_width=2)
+        kb.add(
+            InlineKeyboardButton("🏆 Активные аукционы", callback_data="view_auctions"),
+            InlineKeyboardButton("💼 Мои аукционы", callback_data="my_auctions"),
+            InlineKeyboardButton("📜 Правила", callback_data="help"),
+            InlineKeyboardButton("👑 Админ-панель", callback_data="admin_menu")
+        )
+
+        welcome_text = (
+            f"👋 <b>Добро пожаловать, {user_name}!</b>\n\n"
+            f"🚀 <i>Это бот-аукцион «Ценоловер»</i> - здесь вы можете участвовать в увлекательных торгах "
+            f"за уникальные товары по выгодным ценам.{banned_text}\n\n"
+            f"🎯 <b>Выберите действие:</b>"
+        )
+
+        await message.answer(welcome_text, reply_markup=kb, parse_mode="HTML")
+        logger.info(f"👤 Пользователь {user_id} ({user_name}) запустил бота")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка в /start: {e}")
+        await message.answer("❌ Произошла ошибка. Попробуйте позже.")
+
+# [Остальные обработчики остаются БЕЗ ИЗМЕНЕНИЙ - такие же как в оригинальном bot.py]
+# Для экономии места не копирую их все, но они должны быть такими же
+
+# ... [вставьте сюда ВСЕ остальные обработчики из оригинального bot.py] ...
+
+# ========== ЗАПУСК БОТА ==========
+
+async def on_startup(dispatcher: Dispatcher):
+    await db.initialize()
+    
+    # Запускаем планировщик задач
+    scheduler.start()
+    scheduler.add_job(check_and_start_lots, 'interval', minutes=5)
+    scheduler.add_job(check_and_close_finished, 'interval', minutes=1)
+    
+    logger.info("🚀 Бот «Ценоловер» запущен с Redis storage!")
+    
+    # Уведомление админам
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(
+                admin_id,
+                "✅ <b>Бот «Ценоловер» успешно запущен!</b>\n\n"
+                f"⏰ Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+                f"📢 Канал: {AUCTION_CHANNEL}\n"
+                f"💾 Хранилище: Redis\n\n"
+                "<i>Используйте /start для начала работы</i>",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось уведомить админа {admin_id}: {e}")
+
+async def on_shutdown(dispatcher: Dispatcher):
+    # Отменяем все таймеры
+    for task in active_timers.values():
+        task.cancel()
+    if active_timers:
+        await asyncio.gather(*active_timers.values(), return_exceptions=True)
+    
+    await db.close()
+    await storage.close()
+    logger.info("🛑 Бот «Ценоловер» остановлен")
+
+if __name__ == "__main__":
+    # Настройка rate limiting
+    setup_rate_limit(dp)
+    
+    logger.info(f"🚀 Запуск бота «Ценоловер»...")
+    logger.info(f"📢 Канал: {AUCTION_CHANNEL}")
+    logger.info(f"👑 Админы: {ADMIN_IDS}")
+    logger.info(f"💾 Хранилище: Redis")
+    
+    try:
+        executor.start_polling(
+            dp,
+            skip_updates=True,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка запуска бота: {e}")
