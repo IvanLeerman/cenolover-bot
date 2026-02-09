@@ -238,3 +238,18 @@ AND start_time <= NOW() + INTERVAL '1 hour' * $1
 ORDER BY start_time ASC
         """
         return await self.fetchall(query, hours)
+
+    async def set_channel_message_id(self, auction_id: int, message_id: int):
+        """Установка ID сообщения в канале"""
+        query = "UPDATE lots SET channel_message_id = $1 WHERE auction_id = $2"
+        await self.execute(query, message_id, auction_id)
+
+    async def set_lot_end_time(self, auction_id: int, end_time):
+        """Установка времени окончания аукциона"""
+        query = "UPDATE lots SET end_time = $1 WHERE auction_id = $2"
+        await self.execute(query, end_time, auction_id)
+
+    async def set_lot_status(self, auction_id: int, status: str):
+        """Установка статуса лота"""
+        query = "UPDATE lots SET status = $1 WHERE auction_id = $2"
+        await self.execute(query, status, auction_id)

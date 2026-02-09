@@ -18,7 +18,6 @@ from config import (
     PAYMENT_TIMEOUT_MIN, MAX_UNPAID_WARNINGS, BAN_DAYS, ADMIN_IDS
 )
 from async_db import AsyncDatabase
-from google_sync import check_and_sync_lots
 from rate_limit import setup_rate_limit
 from storage_config import get_redis_storage
 
@@ -34,15 +33,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=API_TOKEN)
-
-# Используем Redis storage вместо MemoryStorage
-storage = get_redis_storage()
 dp = Dispatcher(bot, storage=storage)
-
-scheduler = AsyncIOScheduler(timezone=pytz.timezone(TIMEZONE))
-db = AsyncDatabase(DB_URI)
-
-active_timers: Dict[int, asyncio.Task] = {}
 scheduler = AsyncIOScheduler(timezone=pytz.timezone(TIMEZONE))
 db = AsyncDatabase(DB_URI)
 
@@ -448,7 +439,6 @@ async def cb_admin_menu(callback: types.CallbackQuery):
         InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
         InlineKeyboardButton("👥 Пользователи", callback_data="admin_users"),
         InlineKeyboardButton("📦 Управление лотами", callback_data="admin_lots"),
-        InlineKeyboardButton("🚀 Принудительный запуск", callback_data="admin_force_start"),
         InlineKeyboardButton("🔄 Синхронизация", callback_data="admin_sync"),
         InlineKeyboardButton("⬅️ Назад", callback_data="back_to_main")
     )
@@ -494,34 +484,16 @@ async def check_and_start_lots():
     """Проверяет и запускает лоты, у которых наступило время старта"""
     try:
         upcoming_lots = await db.get_upcoming_lots(hours=1)
-        logger.info(f"🔍 Найдено лотов для проверки: {len(upcoming_lots)}")
         
         for lot in upcoming_lots:
             auction_id = lot['auction_id']
             start_time = lot['start_time']
-            logger.info(f"🔍 Проверяем лот {auction_id}: start_time={start_time}, type={type(start_time)}")
             
             if isinstance(start_time, str):
                 start_time = datetime.fromisoformat(start_time)
-                logger.info(f"📅 Конвертирован из строки: {start_time}")
-            
-            # Приводим start_time к той же временной зоне
-            if start_time.tzinfo is None:
-                # Если время без зоны, считаем что оно в UTC
-                start_time = pytz.UTC.localize(start_time)
-                logger.info(f"🌐 Добавлена UTC зона: {start_time}")
             
             now = datetime.now(pytz.timezone(TIMEZONE))
-            logger.info(f"⏰ Текущее время ({TIMEZONE}): {now}")
-            
-            # Приводим к одной временной зоне для сравнения
-            start_time_in_tz = start_time.astimezone(pytz.timezone(TIMEZONE))
-            logger.info(f"🔄 Конвертировано во время ({TIMEZONE}): {start_time_in_tz}")
-            
-            logger.info(f"⚖️ Сравнение: {start_time_in_tz} <= {now} = {start_time_in_tz <= now}")
-            
-            if start_time_in_tz <= now:
-                logger.info(f"🚀 Запускаем аукцион {auction_id}")
+            if start_time <= now:
                 # Запускаем аукцион
                 end_time = now + timedelta(hours=AUCTION_DURATION_HOURS)
                 await db.set_lot_status(auction_id, 'active')
@@ -534,12 +506,11 @@ async def check_and_start_lots():
                     if message_id:
                         await db.set_channel_message_id(auction_id, message_id)
                 
-                logger.info(f"✅ Аукцион {auction_id} запущен, закончится в {end_time}")
-            else:
-                logger.info(f"⏳ Аукцион {auction_id} еще не готов к запуску")
+                logger.info(f"🚀 Аукцион {auction_id} запущен, закончится в {end_time}")
                 
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске лотов: {e}")
+
 async def check_and_close_finished():
     """Проверяет и закрывает завершенные аукционы"""
     try:
@@ -586,125 +557,12 @@ async def close_auction(auction_id: int):
             
     except Exception as e:
         logger.error(f"❌ Ошибка закрытия аукциона {auction_id}: {e}")
-# ========== АДМИН: ПРИНУДИТЕЛЬНЫЙ ЗАПУСК ==========
-# ========== ФУНКЦИЯ ПУБЛИКАЦИИ В КАНАЛ ==========
-
-async def publish_lot_to_channel(auction_id: int, lot_info: dict):
-    """Публикация лота в канал"""
-    try:
-        name = lot_info.get('name', 'Неизвестно')
-        article = lot_info.get('article', 'Не указан')
-        price = float(lot_info.get('current_price', 0))
-        description = lot_info.get('description', '')
-        
-        caption = (
-            f"🎯 <b>Аукцион №{auction_id}</b>\n\n"
-            f"📦 <b>Товар:</b> {name}\n"
-            f"📋 <b>Артикул:</b> {article}\n"
-            f"💰 <b>Стартовая цена:</b> {price}₽\n\n"
-            f"📝 <b>Описание:</b>\n{description}\n\n"
-            f"👇 <i>Нажмите кнопку ниже для участия</i>"
-        )
-        
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-        kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🎯 Участвовать в аукционе", 
-                                    callback_data=f"join:{auction_id}"))
-        
-        # Отправляем в канал
-        from config import AUCTION_CHANNEL
-        from aiogram import Bot
-        from config import API_TOKEN
-        
-        bot = Bot(token=API_TOKEN)
-        message = await bot.send_message(
-            AUCTION_CHANNEL,
-            caption,
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-        
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.info(f"✅ Лот {auction_id} опубликован в канал")
-        return message.message_id
-        
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"❌ Ошибка публикации лота {auction_id}: {e}")
-        return None
-
-@dp.callback_query_handler(lambda c: c.data == "admin_force_start")
-async def cb_admin_force_start(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Доступ запрещён", show_alert=True)
-        return
-    
-    lots = await db.get_active_or_pending_lots()
-    
-    if not lots:
-        await callback.answer("📭 Нет лотов для запуска", show_alert=True)
-        return
-    
-    
-    kb = InlineKeyboardMarkup(row_width=1)
-    for lot in lots[:10]:
-        kb.add(InlineKeyboardButton(
-            f"🎯 Лот {lot['auction_id']}: {lot['name'][:20]}...",
-            callback_data=f"force_start:{lot['auction_id']}"
-        ))
-    kb.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_menu"))
-    await callback.message.edit_text(
-        "🔧 <b>Принудительный запуск аукциона</b>\n\nВыберите лот для запуска:",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-    await callback.answer()
-
-@dp.callback_query_handler(lambda c: c.data.startswith("force_start:"))
-async def cb_force_start_lot(callback: types.CallbackQuery):
-    if not is_admin(callback.from_user.id):
-        await callback.answer("❌ Доступ запрещён", show_alert=True)
-        return
-    
-    _, auction_id_str = callback.data.split(":")
-    auction_id = int(auction_id_str)
-    
-    lot = await db.get_lot(auction_id)
-    if not lot:
-        await callback.answer("❌ Лот не найден", show_alert=True)
-        return
-    
-    try:
-        await db.set_lot_status(auction_id, "active")
-        from datetime import timezone
-        end_time_aware = datetime.now(pytz.timezone(TIMEZONE)) + timedelta(hours=AUCTION_DURATION_HOURS)
-        end_time = end_time_aware.astimezone(timezone.utc).replace(tzinfo=None)
-        await db.set_lot_end_time(auction_id, end_time)
-        
-        message_id = await publish_lot_to_channel(auction_id, lot)
-        if message_id:
-            await db.set_channel_message_id(auction_id, message_id)
-        
-        await callback.answer(f"✅ Аукцион {auction_id} запущен!", show_alert=True)
-        logger.info(f"👑 Админ {callback.from_user.id} принудительно запустил аукцион {auction_id}")
-        
-        await cb_admin_menu(callback)
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка принудительного запуска: {e}")
-        await callback.answer(f"❌ Ошибка: {str(e)[:50]}", show_alert=True)
 async def on_startup(dispatcher: Dispatcher):
     await db.initialize()
-    
-    # Первоначальная синхронизация из Google Sheets
-    await check_and_sync_lots(db)
     
     # Запускаем планировщик задач
     scheduler.start()
     scheduler.add_job(check_and_start_lots, 'interval', minutes=5)
-    scheduler.add_job(lambda: check_and_sync_lots(db), "interval", minutes=30)
     scheduler.add_job(check_and_close_finished, 'interval', minutes=1)
     
     logger.info("🚀 Бот «Ценоловер» запущен с Redis storage!")

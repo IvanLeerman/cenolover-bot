@@ -4,52 +4,43 @@ __pycache__/
 *$py.class
 *.so
 .Python
-venv/
 env/
-.env
-.venv
-
-# Virtual environment
 venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 
-# Logs
-*.log
-logs/
+# Project specific
 auction_bot.log
-
-# Database files
-*.db
-*.sqlite3
-
-# Configs with secrets
-.env
-config.py
-secrets.py
-credentials.json
-token.pickle
-*.env
-
-# Sessions
-*.session
-
-# Backup files
+qr_codes/
+logs/
 *.backup
 *.backup*
-*.orig
-*.rej
-*.tmp
-*.patch
-
-# System
-.DS_Store
-Thumbs.db
-
-# Temporary files
-*.tmp
-udo systemctl status postgresql@12-main
+*.sync_backup
+build_context/
+models.py
+apply_fixes.py
+requirements_updated.txt
+.env
+.env.*
+!/.env.example
