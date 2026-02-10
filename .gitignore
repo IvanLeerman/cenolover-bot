@@ -1,46 +1,58 @@
-# Python
+# Файлы окружения и секреты
+.env
+*.env
+.env.local
+
+# Логи
+*.log
+auction_bot.log
+
+# Питон кэш
 __pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
-env/
+
+# Венв и зависимости
 venv/
-ENV/
-env.bak/
+venv*/
+*.venv
 venv.bak/
+.env.bak
 
-# Django
-*.log
-local_settings.py
-db.sqlite3
+# Резервные копии и бэкапы
+*.backup
+*.backup*
+bot.py.backup*
+bot_part*
+*_part*
+*.bak
+backup/
 
-# OS
+# Docker
+build_context/
+
+# Временные файлы
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Системные файлы
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
+# Локальные настройки
+local_settings.py
+config.local.py
+
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 
-# Project specific
-auction_bot.log
-qr_codes/
-logs/
-*.backup
-*.backup*
-*.sync_backup
-build_context/
-models.py
-apply_fixes.py
-requirements_updated.txt
-.env
-.env.*
-!/.env.example
+# Тестовые и отладочные файлы
+test_*.py
+debug_*.py
+fix_*.py
+manual_*.py
