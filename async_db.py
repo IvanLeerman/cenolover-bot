@@ -253,3 +253,9 @@ ORDER BY start_time ASC
         """Установка статуса лота"""
         query = "UPDATE lots SET status = $1 WHERE auction_id = $2"
         await self.execute(query, status, auction_id)
+
+    async def fetchrow(self, query: str, *args):
+        """Выполнить запрос и вернуть одну строку"""
+        async with self.pool.acquire() as connection:
+            return await connection.fetchrow(query, *args)
+
